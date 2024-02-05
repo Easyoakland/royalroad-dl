@@ -1,7 +1,7 @@
 use leaky_bucket::RateLimiter;
 use regex::{Regex, RegexBuilder};
 use royalroad_dl::BufferedIter;
-use scraper::{node::Comment, selector, ElementRef, Html, Selector};
+use scraper::{selector, Html, Selector};
 use std::{
     borrow::Cow,
     num::NonZeroU64,
@@ -184,17 +184,11 @@ async fn main() -> anyhow::Result<()> {
             })
             .collect::<Vec<_>>();
         for id in bad_paragraphs {
-            let text = ElementRef::wrap(chapter_html.tree.get(id).expect("id selected from tree"))
-                .expect("is element")
-                .inner_html();
-            let mut element_mut = chapter_html
+            chapter_html
                 .tree
                 .get_mut(id)
-                .expect("id selected from tree");
-            element_mut.insert_after(scraper::Node::Comment(Comment {
-                comment: text.into(),
-            }));
-            element_mut.detach();
+                .expect("id selected from tree")
+                .detach();
         }
 
         // Write chapter content.
