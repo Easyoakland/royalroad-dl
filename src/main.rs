@@ -1,7 +1,7 @@
 use leaky_bucket::RateLimiter;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use royalroad_dl::BufferedIter;
-use scraper::{selector, Html, Selector};
+use scraper::{node::Comment, selector, ElementRef, Html, Selector};
 use std::{
     borrow::Cow,
     num::NonZeroU64,
@@ -39,11 +39,33 @@ fn sanitize_path(path: &str) -> Cow<'_, str> {
 /// If paragraph contains a warning
 fn is_warning(msg: &str) -> bool {
     static REGEX: OnceLock<Regex> = OnceLock::new();
-    msg.len() < 150
-        && {
-            let regex = REGEX.get_or_init(|| Regex::new(r#"stolen|(on Amazon)|purloined|pilfered|misappropriated|report|content|unauthorized|(Royal Road)|theft|story|novel|appropriated|narrative|permission|illicitly"#).unwrap());
-            regex.find_iter(msg).count() >= 3
-        }
+    msg.len() < 150 && {
+        let regex = REGEX.get_or_init(|| {
+            RegexBuilder::new(
+                "(on Amazon)\
+                |(Royal Road)\
+                |appropriated
+                |content\
+                |illicitly\
+                |misappropriated\
+                |narrative
+                |novel\
+                |permission\
+                |pilfered\
+                |purloined\
+                |report\
+                |story\
+                |taken\
+                |theft\
+                |unauthorized\
+                |stolen",
+            )
+            .case_insensitive(true)
+            .build()
+            .unwrap()
+        });
+        regex.find_iter(msg).count() >= 3
+    }
 }
 /// Warning s
 
@@ -58,8 +80,8 @@ struct Options {
     /// Minimum ms per request. Can't be zero.
     #[bpaf(short, long, fallback(NonZeroU64::new(1500).unwrap()), display_fallback)]
     time_limit: NonZeroU64,
-    /// Max concurrent connections. Zero indicates no limit.
-    #[bpaf(short, long, fallback(1), display_fallback)]
+    /// Concurrent connections limit. Zero indicates no limit.
+    #[bpaf(short, long, fallback(4))]
     connections: usize,
     /// The main page (e.g. table of contents) of the content to download.
     #[bpaf(positional("URL"))]
@@ -99,27 +121,24 @@ async fn main() -> anyhow::Result<()> {
     let limiter = Arc::new(
         RateLimiter::builder()
             .fair(false)
-            .initial(4)
+            .initial(1)
             .interval(Duration::from_millis(opt.time_limit.get()))
             .build(),
     );
-    let chapter_responses = |debug| {
+    let chapter_responses = {
         let chapters = main_html
             .select(chapter_link_selector()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
             .map(|x| opt.url.join(x).unwrap()); // absolute url from relative url
         let chapters = chapters.collect::<Vec<_>>();
         let chapters_len = chapters.len();
-        let limiter = limiter.clone();
         // Buffer tasks while handling for concurrency.
         let chapter_responses = BufferedIter::new(
             chapters.into_iter().enumerate().map(move |(i, url)| {
                 let limiter = limiter.clone();
                 tokio::spawn(async move {
                     limiter.acquire_one().await;
-                    if debug {
-                        println!("Downloading {}/{}: {}", i + 1, chapters_len, url)
-                    };
+                    println!("Downloading {}/{}: {}", i + 1, chapters_len, url);
                     let res = (url.clone(), reqwest::get(url).await);
                     res
                 })
@@ -128,8 +147,8 @@ async fn main() -> anyhow::Result<()> {
         );
         chapter_responses
     };
-    // Download each chapter twice. Compare content. Remove text that doesn't match.
-    for (handle, handle2) in std::iter::zip(chapter_responses(true), chapter_responses(false)) {
+    // Save each chapter to file.
+    for handle in chapter_responses {
         let (url, chapter_response) = handle.await?;
         let mut chapter_html = Html::parse_document(&chapter_response?.text().await?);
 
@@ -152,29 +171,30 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
 
-        // Compare to second download and remove inconsistent paragraphs.
-        let chapter_html2 = Html::parse_document(&handle2.await?.1?.text().await?);
-        let inconsistent_paragraphs = std::iter::zip(
-            chapter_html.select(paragraph_selector()),
-            chapter_html2.select(paragraph_selector()),
-        )
-        .filter_map(|(x, y)| {
-            if x.inner_html() != y.inner_html() || (is_warning(&x.inner_html())) {
-                println!("Removing: {} ", x.inner_html());
-                println!("{}", y.inner_html());
-
-                Some(x.id())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-        for id in inconsistent_paragraphs {
-            chapter_html
+        // Remove bad paragraphs.
+        let bad_paragraphs = chapter_html
+            .select(paragraph_selector())
+            .filter_map(|x| {
+                if is_warning(&x.inner_html()) {
+                    println!("Removing: {} ", x.inner_html());
+                    Some(x.id())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for id in bad_paragraphs {
+            let text = ElementRef::wrap(chapter_html.tree.get(id).expect("id selected from tree"))
+                .expect("is element")
+                .inner_html();
+            let mut element_mut = chapter_html
                 .tree
                 .get_mut(id)
-                .expect("unchanged tree since selected id")
-                .detach()
+                .expect("id selected from tree");
+            element_mut.insert_after(scraper::Node::Comment(Comment {
+                comment: text.into(),
+            }));
+            element_mut.detach();
         }
 
         // Write chapter content.
