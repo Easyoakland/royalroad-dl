@@ -9,10 +9,15 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tokio::{fs::File, io::AsyncWriteExt};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+};
 use url::Url;
 
 mod selectors;
+const END_HTML: &str = "</body></html>";
+
 /// Convert path to something that can be saved to file.
 pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
@@ -32,7 +37,7 @@ struct Options {
     #[bpaf(short, long, fallback(NonZeroU64::new(1500).unwrap()), display_fallback)]
     time_limit: NonZeroU64,
     /// Concurrent connections limit. Zero indicates no limit.
-    #[bpaf(short, long, fallback(4))]
+    #[bpaf(short, long, fallback(4), display_fallback)]
     connections: usize,
     /// Incremental download. Auto-detect previously downloaded and only download new.
     #[bpaf(short, long)]
@@ -61,15 +66,33 @@ async fn main() -> anyhow::Result<()> {
     )));
     println!("Saving to {}", path.display());
     // Write main title.
-    let mut f = File::create(path).await?;
-    f.write_all(
-        format!(
-            r#"<html><head><meta charset="UTF-8"><title>{}</title></head><body>"#,
-            main_title
+    let incremental = path.exists() && opt.incremental;
+    let mut f = if incremental {
+        File::options()
+            .read(true)
+            .write(true)
+            .open(path.clone())
+            .await?
+    } else {
+        File::create(path.clone()).await?
+    };
+    if incremental {
+        // Seek to just before end of file to avoid overwriting previous downloads.
+        f.seek(std::io::SeekFrom::End(
+            -i64::try_from(END_HTML.len()).unwrap(),
+        ))
+        .await?;
+    } else {
+        // Write title and file start.
+        f.write_all(
+            format!(
+                r#"<html><head><meta charset="UTF-8"><title>{}</title></head><body>"#,
+                main_title
+            )
+            .as_bytes(),
         )
-        .as_bytes(),
-    )
-    .await?;
+        .await?;
+    }
 
     // Get chapters with a rate limit.
     let limiter = Arc::new(
@@ -80,11 +103,34 @@ async fn main() -> anyhow::Result<()> {
             .build(),
     );
     let chapter_responses = {
-        let chapters = main_html
+        let mut chapters = main_html
             .select(selectors::chapter_link_selector()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
             .map(|x| opt.url.join(x).unwrap()); // absolute url from relative url
-        let chapters = chapters.collect::<Vec<_>>();
+        let chapters = if incremental {
+            // Filter past chapters already downloaded
+            let mut f = File::open(path).await?;
+            let mut dst = String::new();
+            f.read_to_string(&mut dst).await?;
+            let previously_downloaded = Html::parse_document(&dst);
+
+            // Skip last downloaded chapter if it exists.
+            if let Some(last_downloaded_chapter) = previously_downloaded
+                .select(selectors::downloaded_chapter_selector())
+                .last()
+                .and_then(|x| x.attr("href"))
+                .map(|x| Url::parse(x).expect("valid url"))
+            {
+                let _ = chapters
+                    .by_ref()
+                    .skip_while(|x| *x != last_downloaded_chapter) // skip up to most recently downloaded
+                    .next(); // and including most recently downloaded
+            };
+
+            chapters.collect()
+        } else {
+            chapters.collect::<Vec<_>>()
+        };
         let chapters_len = chapters.len();
         // Buffer tasks while handling for concurrency.
         let chapter_responses = BufferedIter::new(
@@ -155,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
         f.write_all(chapter_content.as_bytes()).await?;
     }
 
-    f.write_all(b"</body></html>").await?;
+    f.write_all(END_HTML.as_bytes()).await?;
     f.shutdown().await?;
     Ok(())
 }
