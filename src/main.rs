@@ -1,7 +1,7 @@
 use leaky_bucket::RateLimiter;
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use royalroad_dl::BufferedIter;
-use scraper::{selector, Html, Selector};
+use scraper::Html;
 use std::{
     borrow::Cow,
     num::NonZeroU64,
@@ -12,62 +12,13 @@ use std::{
 use tokio::{fs::File, io::AsyncWriteExt};
 use url::Url;
 
-fn title_selector() -> &'static Selector {
-    static CELL: OnceLock<Selector> = OnceLock::new();
-    CELL.get_or_init(|| selector::Selector::parse("title").unwrap())
-}
-fn chapter_link_selector() -> &'static Selector {
-    static CELL: OnceLock<Selector> = OnceLock::new();
-    CELL.get_or_init(|| {
-        selector::Selector::parse(r#"#chapters tr[data-url^="/fiction/"]"#).unwrap()
-    })
-}
-fn chapter_content_selector() -> &'static Selector {
-    static CELL: OnceLock<Selector> = OnceLock::new();
-    CELL.get_or_init(|| selector::Selector::parse("div.chapter-content").unwrap())
-}
-fn paragraph_selector() -> &'static Selector {
-    static CELL: OnceLock<Selector> = OnceLock::new();
-    CELL.get_or_init(|| selector::Selector::parse("p").unwrap())
-}
+mod selectors;
 /// Convert path to something that can be saved to file.
-fn sanitize_path(path: &str) -> Cow<'_, str> {
+pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = REGEX.get_or_init(|| Regex::new(r#"[^\w\d]"#).unwrap());
     regex.replace_all(path, "_")
 }
-/// If paragraph contains a warning
-fn is_warning(msg: &str) -> bool {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    msg.len() < 150 && {
-        let regex = REGEX.get_or_init(|| {
-            RegexBuilder::new(
-                "(on Amazon)\
-                |(Royal Road)\
-                |appropriated
-                |content\
-                |illicitly\
-                |misappropriated\
-                |narrative
-                |novel\
-                |permission\
-                |pilfered\
-                |purloined\
-                |report\
-                |story\
-                |taken\
-                |theft\
-                |unauthorized\
-                |stolen",
-            )
-            .case_insensitive(true)
-            .build()
-            .unwrap()
-        });
-        regex.find_iter(msg).count() >= 3
-    }
-}
-/// Warning s
 
 /// Incremental periodic downloader. Useful on slow connections, going offline, or because online content has a tendency to disappear.
 /// Like receiving new content in the mail.
@@ -83,6 +34,9 @@ struct Options {
     /// Concurrent connections limit. Zero indicates no limit.
     #[bpaf(short, long, fallback(4))]
     connections: usize,
+    /// Incremental download. Auto-detect previously downloaded and only download new.
+    #[bpaf(short, long)]
+    incremental: bool,
     /// The main page (e.g. table of contents) of the content to download.
     #[bpaf(positional("URL"))]
     url: Url,
@@ -96,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let main_html = Html::parse_document(&reqwest::get(opt.url.clone()).await?.text().await?);
 
     let main_title = main_html
-        .select(title_selector())
+        .select(selectors::title_selector())
         .map(|x| x.inner_html())
         .next()
         .unwrap_or_default();
@@ -127,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let chapter_responses = {
         let chapters = main_html
-            .select(chapter_link_selector()) // table of chapters
+            .select(selectors::chapter_link_selector()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
             .map(|x| opt.url.join(x).unwrap()); // absolute url from relative url
         let chapters = chapters.collect::<Vec<_>>();
@@ -154,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Write chapter title.
         let chapter_title = chapter_html
-            .select(title_selector())
+            .select(selectors::title_selector())
             .map(|x| x.inner_html())
             .next()
             .expect("chapter title"); // TODO: don't panic
@@ -173,9 +127,9 @@ async fn main() -> anyhow::Result<()> {
 
         // Remove bad paragraphs.
         let bad_paragraphs = chapter_html
-            .select(paragraph_selector())
+            .select(selectors::paragraph_selector())
             .filter_map(|x| {
-                if is_warning(&x.inner_html()) {
+                if selectors::is_warning(&x.inner_html()) {
                     println!("Removing: {} ", x.inner_html());
                     Some(x.id())
                 } else {
@@ -193,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Write chapter content.
         let chapter_content = chapter_html
-            .select(chapter_content_selector())
+            .select(selectors::chapter_content_selector())
             .map(|x| x.html())
             .next()
             .expect("chapter body"); // TODO don't panic
