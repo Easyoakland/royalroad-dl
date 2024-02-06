@@ -78,10 +78,25 @@ async fn main() -> anyhow::Result<()> {
     };
     if incremental {
         // Seek to just before end of file to avoid overwriting previous downloads.
+        // Truncate previous `END_HTML` if it exists so it isn't duplicated when added back at the end.
         f.seek(std::io::SeekFrom::End(
-            -i64::try_from(END_HTML.len()).unwrap(),
+            -i64::try_from(END_HTML.len() * 2).unwrap(),
         ))
         .await?;
+
+        let mut dst = String::new();
+        f.read_to_string(&mut dst).await?;
+        if let Some(previous_file_end) = dst
+            .rfind("</html>")
+            .and_then(|idx| dst[..idx].rfind("</body>"))
+        {
+            f.set_len(
+                f.metadata().await?.len() - u64::try_from(dst.len()).unwrap()
+                    + (u64::try_from(previous_file_end)).unwrap(),
+            )
+            .await?;
+            f.seek(std::io::SeekFrom::End(0)).await?;
+        }
     } else {
         // Write title and file start.
         f.write_all(
@@ -102,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
             .interval(Duration::from_millis(opt.time_limit.get()))
             .build(),
     );
+    let chapters_len;
     let chapter_responses = {
         let mut chapters = main_html
             .select(selectors::chapter_link_selector()) // table of chapters
@@ -131,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
         } else {
             chapters.collect::<Vec<_>>()
         };
-        let chapters_len = chapters.len();
+        chapters_len = chapters.len();
         // Buffer tasks while handling for concurrency.
         let chapter_responses = BufferedIter::new(
             chapters.into_iter().enumerate().map(move |(i, url)| {
@@ -148,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
         chapter_responses
     };
     // Save each chapter to file.
-    for handle in chapter_responses {
+    for (i, handle) in chapter_responses.enumerate() {
         let (url, chapter_response) = handle.await?;
         let mut chapter_html = Html::parse_document(&chapter_response?.text().await?);
 
@@ -176,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
             .select(selectors::paragraph_selector())
             .filter_map(|x| {
                 if selectors::is_warning(&x.inner_html()) {
-                    println!("Removing: {} ", x.inner_html());
+                    println!("Removing {}/{}: {} ", i + 1, chapters_len, x.inner_html());
                     Some(x.id())
                 } else {
                     None
