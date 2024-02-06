@@ -54,7 +54,3 @@ pub fn is_warning(msg: &str) -> bool {
         regex.find_iter(msg).count() >= 3
     }
 }
-pub fn downloaded_chapter_selector() -> &'static Selector {
-    static CELL: OnceLock<Selector> = OnceLock::new();
-    CELL.get_or_init(|| selector::Selector::parse(r#"h1 > a[class="chapter"][href]"#).unwrap())
-}

@@ -4,6 +4,7 @@ use royalroad_dl::BufferedIter;
 use scraper::Html;
 use std::{
     borrow::Cow,
+    io::BufRead,
     num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -11,7 +12,7 @@ use std::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncSeekExt, AsyncWriteExt},
 };
 use url::Url;
 
@@ -23,6 +24,54 @@ pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = REGEX.get_or_init(|| Regex::new(r#"[^\w\d]+"#).unwrap());
     regex.replace_all(path, "_")
+}
+
+/// - Seek to after the last content previously downloaded in preparation for writing new content.
+/// - Retrieves last known chapter url if found
+/// # Note
+/// Does blocking io
+// TODO: don't do blocking io. Will need to impl AsyncRevBufReader
+async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Option<Url>> {
+    use rev_buf_reader::RevBufReader;
+
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+
+    let mut rev_lines = RevBufReader::new(f.try_clone().await?.into_std().await).lines();
+    // Get the offset end of the previous download for seeking later.
+    let mut reverse_offset = 0;
+    let mut found_end = false;
+    for line in rev_lines.by_ref() {
+        let line = line?;
+        if let Some(idx) = line.rfind("</body>") {
+            reverse_offset += line.len() - idx;
+            found_end = true;
+            break;
+        } else {
+            reverse_offset += line.len();
+        }
+    }
+
+    // Get the most recently downloaded chapter
+    let chapter_url = rev_lines
+        .find_map(|line| {
+            line.map(|line| {
+                REGEX
+                    .get_or_init(|| Regex::new(r#"<a class="chapter" href="(.*?)">"#).unwrap())
+                    .captures(&line)
+                    .and_then(|x| x.get(1).and_then(|x| Url::parse(x.as_str()).ok()))
+            })
+            .transpose()
+        })
+        .transpose()?;
+
+    if found_end {
+        // Start appending at end of file before last `END_HTML`.
+        f.seek(std::io::SeekFrom::End(
+            -i64::try_from(reverse_offset).unwrap(),
+        ))
+        .await?;
+    }
+    Ok(chapter_url)
 }
 
 /// Incremental periodic downloader. Useful on slow connections, going offline, or because online content has a tendency to disappear.
@@ -49,56 +98,48 @@ struct Options {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // parse cli opts
+    // Parse cli options.
     let opt = options().run();
 
+    // Get main document.
     let main_html = Html::parse_document(&reqwest::get(opt.url.clone()).await?.text().await?);
 
+    // Extract title.
     let main_title = main_html
         .select(selectors::title_selector())
         .map(|x| x.inner_html())
         .next()
         .unwrap_or_default();
-    // Create output file.
+
+    // Start output file. Either create new or reuse previous if incremental download.
     let path = opt.path.unwrap_or(PathBuf::from(format!(
         "{}.html",
         sanitize_path(&main_title)
     )));
     println!("Saving to {}", path.display());
-    // Write main title.
     let incremental = path.exists() && opt.incremental;
     let mut f = if incremental {
-        File::options()
-            .read(true)
-            .write(true)
-            .open(path.clone())
-            .await?
+        let backup_path = {
+            let mut out = path.clone().into_os_string();
+            out.push(".bk");
+            out
+        };
+        println!("Backup to {}", std::path::Path::new(&backup_path).display());
+        tokio::fs::copy(&path, &backup_path).await?;
+        File::options().read(true).write(true).open(&path).await?
     } else {
-        File::create(path.clone()).await?
+        File::create(&path).await?
     };
-    if incremental {
-        // Seek to just before end of file to avoid overwriting previous downloads.
-        // Truncate previous `END_HTML` if it exists so it isn't duplicated when added back at the end.
-        f.seek(std::io::SeekFrom::End(
-            -i64::try_from(END_HTML.len() * 2).unwrap(),
-        ))
-        .await?;
-
-        let mut dst = String::new();
-        f.read_to_string(&mut dst).await?;
-        if let Some(previous_file_end) = dst
-            .rfind("</html>")
-            .and_then(|idx| dst[..idx].rfind("</body>"))
-        {
-            f.set_len(
-                f.metadata().await?.len() - u64::try_from(dst.len()).unwrap()
-                    + (u64::try_from(previous_file_end)).unwrap(),
-            )
-            .await?;
-            f.seek(std::io::SeekFrom::End(0)).await?;
-        }
+    let last_downloaded_chapter = if incremental {
+        start_incremental_append(&mut f).await?
     } else {
-        // Write title and file start.
+        None
+    };
+    // If no known chapter to resume from
+    if last_downloaded_chapter.is_none() {
+        // Start writing file from beginning.
+        f.seek(std::io::SeekFrom::Start(0)).await?;
+        // Write title and file headers.
         f.write_all(
             format!(
                 r#"<html><head><meta charset="UTF-8"><title>{}</title></head><body>"#,
@@ -117,55 +158,48 @@ async fn main() -> anyhow::Result<()> {
             .interval(Duration::from_millis(opt.time_limit.get()))
             .build(),
     );
-    let chapters_len;
-    let chapter_responses = {
+    let (chapters_len, chapter_responses) = {
         let mut chapters = main_html
             .select(selectors::chapter_link_selector()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
-            .map(|x| opt.url.join(x).unwrap()); // absolute url from relative url
-        let chapters = if incremental {
-            // Filter past chapters already downloaded
-            let mut f = File::open(path).await?;
-            let mut dst = String::new();
-            f.read_to_string(&mut dst).await?;
-            let previously_downloaded = Html::parse_document(&dst);
+            .map(|x| opt.url.join(x).unwrap()) // absolute url from relative url
+            .enumerate();
 
+        let (chapters_len, chapters) = if incremental {
             // Skip last downloaded chapter if it exists.
-            if let Some(last_downloaded_chapter) = previously_downloaded
-                .select(selectors::downloaded_chapter_selector())
-                .last()
-                .and_then(|x| x.attr("href"))
-                .map(|x| Url::parse(x).expect("valid url"))
-            {
-                let _ = chapters
+            let mut skipped = 0;
+            if let Some(chapter) = last_downloaded_chapter {
+                chapters
                     .by_ref()
-                    .skip_while(|x| *x != last_downloaded_chapter) // skip up to most recently downloaded
+                    .inspect(|_| skipped += 1)
+                    .skip_while(|(_, x)| *x != chapter) // skip up to most recently downloaded
                     .next(); // and including most recently downloaded
             };
 
-            chapters.collect()
+            let chapters = chapters.collect::<Vec<_>>();
+            (chapters.len() + skipped, chapters)
         } else {
-            chapters.collect::<Vec<_>>()
+            let chapters = chapters.collect::<Vec<_>>();
+            (chapters.len(), chapters)
         };
-        chapters_len = chapters.len();
-        // Buffer tasks while handling for concurrency.
+
+        // Buffer tasks for concurrency.
         let chapter_responses = BufferedIter::new(
-            chapters.into_iter().enumerate().map(move |(i, url)| {
+            chapters.into_iter().map(move |(i, url)| {
                 let limiter = limiter.clone();
                 tokio::spawn(async move {
                     limiter.acquire_one().await;
                     println!("Downloading {}/{}: {}", i + 1, chapters_len, url);
-                    let res = (url.clone(), reqwest::get(url).await);
-                    res
+                    (i, url.clone(), reqwest::get(url).await)
                 })
             }),
             opt.connections,
         );
-        chapter_responses
+        (chapters_len, chapter_responses)
     };
     // Save each chapter to file.
-    for (i, handle) in chapter_responses.enumerate() {
-        let (url, chapter_response) = handle.await?;
+    for handle in chapter_responses {
+        let (i, url, chapter_response) = handle.await?;
         let mut chapter_html = Html::parse_document(&chapter_response?.text().await?);
 
         // Write chapter title.
@@ -207,17 +241,22 @@ async fn main() -> anyhow::Result<()> {
                 .detach();
         }
 
-        // Write chapter content.
-        let chapter_content = chapter_html
+        // Write chapter content and end with `END_HTML` in case of ctrl-c.
+        let mut chapter_content = chapter_html
             .select(selectors::chapter_content_selector())
             .map(|x| x.html())
             .next()
             .expect("chapter body"); // TODO don't panic
-
+        chapter_content.push_str(END_HTML);
         f.write_all(chapter_content.as_bytes()).await?;
+
+        // Seek before `END_HTML` so it is overwritten on next chapter content
+        f.seek(std::io::SeekFrom::Current(
+            -i64::try_from(END_HTML.len()).unwrap(),
+        ))
+        .await?;
     }
 
-    f.write_all(END_HTML.as_bytes()).await?;
     f.shutdown().await?;
     Ok(())
 }
