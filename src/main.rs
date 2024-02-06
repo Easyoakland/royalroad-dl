@@ -21,7 +21,7 @@ const END_HTML: &str = "</body></html>";
 /// Convert path to something that can be saved to file.
 pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = REGEX.get_or_init(|| Regex::new(r#"[^\w\d]"#).unwrap());
+    let regex = REGEX.get_or_init(|| Regex::new(r#"[^\w\d]+"#).unwrap());
     regex.replace_all(path, "_")
 }
 
