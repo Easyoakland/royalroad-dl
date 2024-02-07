@@ -162,27 +162,24 @@ async fn main() -> anyhow::Result<()> {
             .select(selectors::chapter_link_selector()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
             .map(|x| opt.url.join(x).unwrap()) // absolute url from relative url
-            .enumerate();
+            .enumerate()
+            .collect::<Vec<_>>();
 
-        let (chapters_len, chapters) = if incremental {
-            // Skip last downloaded chapter if it exists.
-            let mut skipped = 0;
+        let chapters_len = chapters.len();
+
+        if incremental {
+            // Skip last downloaded chapter if it exists in the main page.
+            // If it doesn't exist, don't skip anything as that likely indicates previously
+            // downloaded chapters are no longer available and all available chapters were posted
+            // after those already downloaded previously.
             if let Some(chapter) = last_downloaded_chapter {
-                chapters
-                    .by_ref()
-                    .inspect(|_| skipped += 1)
-                    .skip_while(|(_, x)| *x != chapter) // skip up to most recently downloaded
-                    .next(); // and including most recently downloaded
+                if let Some(pos) = chapters.iter().position(|(_, x)| *x == chapter) {
+                    chapters.drain(..=pos);
+                };
             };
+        }
 
-            let chapters = chapters.collect::<Vec<_>>();
-            (chapters.len() + skipped, chapters)
-        } else {
-            let chapters = chapters.collect::<Vec<_>>();
-            (chapters.len(), chapters)
-        };
-
-        // Buffer tasks for concurrency.
+        // GET urls and Buffer tasks for concurrency.
         let chapter_responses = BufferedIter::new(
             chapters.into_iter().map(move |(i, url)| {
                 let limiter = limiter.clone();
