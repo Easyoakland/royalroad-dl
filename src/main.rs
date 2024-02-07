@@ -22,7 +22,8 @@ const END_HTML: &str = "</body></html>";
 /// Convert path to something that can be saved to file.
 pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = REGEX.get_or_init(|| Regex::new(r#"[^\w\d]+"#).unwrap());
+    // See https://en.wikipedia.org/wiki/Filename#Comparison_of_filename_limitations
+    let regex = REGEX.get_or_init(|| Regex::new(r#"[\x00-\x1F\x7F"*/:<>?\\|]+"#).unwrap());
     regex.replace_all(path, "_")
 }
 
@@ -115,7 +116,11 @@ async fn main() -> anyhow::Result<()> {
     // Start output file. Either create new or reuse previous if incremental download.
     let path = opt.path.unwrap_or(PathBuf::from(format!(
         "{}.html",
-        sanitize_path(&main_title)
+        sanitize_path(
+            main_title
+                .strip_suffix(" | Royal Road")
+                .unwrap_or(&main_title)
+        )
     )));
     println!("Saving to {}", path.display());
     let incremental = path.exists() && opt.incremental;
