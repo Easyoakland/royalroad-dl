@@ -75,7 +75,6 @@ async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Op
 }
 
 /// Incremental periodic downloader. Useful on slow connections, going offline, or because online content has a tendency to disappear.
-/// Like receiving new content in the mail.
 #[derive(Debug, Clone, bpaf::Bpaf)]
 #[bpaf(options, version)]
 struct Options {
