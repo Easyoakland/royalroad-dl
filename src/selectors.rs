@@ -2,7 +2,7 @@
 
 use regex::{Regex, RegexBuilder};
 use scraper::{selector, Selector};
-use std::sync::OnceLock;
+use std::{collections::HashSet, sync::OnceLock};
 
 pub fn title_selector() -> &'static Selector {
     static CELL: OnceLock<Selector> = OnceLock::new();
@@ -51,6 +51,11 @@ pub fn is_warning(msg: &str) -> bool {
             .build()
             .unwrap()
         });
-        regex.find_iter(msg).count() >= 3
+        regex
+            .find_iter(msg)
+            .map(|x| x.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+            >= 3
     }
 }
