@@ -100,8 +100,10 @@ async fn main() -> anyhow::Result<()> {
     // Parse cli options.
     let opt = options().run();
 
+    let client = reqwest::Client::builder().build().unwrap();
+
     // Get main document.
-    let main_html = Html::parse_document(&reqwest::get(opt.url.clone()).await?.text().await?);
+    let main_html = Html::parse_document(&client.get(opt.url.clone()).send().await?.text().await?);
 
     // Extract title.
     let main_title = main_html
@@ -183,10 +185,11 @@ async fn main() -> anyhow::Result<()> {
         let chapter_responses = BufferedIter::new(
             chapters.into_iter().map(move |(i, url)| {
                 let limiter = limiter.clone();
+                let client = client.clone();
                 tokio::spawn(async move {
                     limiter.acquire_one().await;
                     println!("Downloading {}/{}: {}", i + 1, chapters_len, url);
-                    (i, url.clone(), reqwest::get(url).await)
+                    (i, url.clone(), client.get(url).send().await)
                 })
             }),
             opt.connections,
