@@ -56,7 +56,7 @@ async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Op
         .find_map(|line| {
             line.map(|line| {
                 REGEX
-                    .get_or_init(|| Regex::new(r#"<a class="chapter" href="(.*?)">"#).unwrap())
+                    .get_or_init(|| Regex::new(r#"href="(.*?)""#).unwrap())
                     .captures(&line)
                     .and_then(|x| x.get(1).and_then(|x| Url::parse(x.as_str()).ok()))
             })
