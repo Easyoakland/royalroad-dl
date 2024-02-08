@@ -159,7 +159,6 @@ async fn main() -> anyhow::Result<()> {
     // Get chapters with a rate limit.
     let limiter = Arc::new(
         RateLimiter::builder()
-            .fair(false)
             .initial(1)
             .interval(Duration::from_millis(opt.time_limit.get()))
             .build(),
@@ -227,14 +226,10 @@ async fn main() -> anyhow::Result<()> {
 
         // Remove bad paragraphs.
         let bad_paragraphs = chapter_html
-            .select(selectors::paragraph_selector())
-            .filter_map(|x| {
-                if selectors::is_warning(&x.inner_html()) {
-                    println!("Removing {}/{}: {} ", i + 1, chapters_len, x.inner_html());
-                    Some(x.id())
-                } else {
-                    None
-                }
+            .select(selectors::warning_paragraphs())
+            .map(|x| {
+                println!("Removing {}/{}: {} ", i + 1, chapters_len, x.inner_html());
+                x.id()
             })
             .collect::<Vec<_>>();
         for id in bad_paragraphs {
