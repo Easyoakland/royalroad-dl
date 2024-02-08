@@ -123,21 +123,31 @@ async fn main() -> anyhow::Result<()> {
         )
     )));
     println!("Saving to {}", path.display());
-    let incremental = path.exists() && opt.incremental;
+    let incremental = opt.incremental && path.exists();
+    if !opt.incremental && path.exists() {
+        anyhow::bail!("File path already exists. Move the item or pass `--incremental` to use it as previous chapter cache.");
+    }
     let mut f = if incremental {
-        let backup_path = {
-            let mut out = path.clone().into_os_string();
-            out.push(".bk");
-            out
-        };
-        println!("Backup to {}", std::path::Path::new(&backup_path).display());
-        tokio::fs::copy(&path, &backup_path).await?;
         File::options().read(true).write(true).open(&path).await?
     } else {
         File::create(&path).await?
     };
     let last_downloaded_chapter = if incremental {
-        start_incremental_append(&mut f).await?
+        let last_downloaded_chapter = start_incremental_append(&mut f).await?;
+        if last_downloaded_chapter.is_none() {
+            // Will be replacing file so backup first.
+            let backup_path = {
+                let mut out = path.clone().into_os_string();
+                out.push(".bk");
+                out
+            };
+            println!(
+                "Couldn't find a previous chapter URL.\nOverwriting file after backing up to {}",
+                std::path::Path::new(&backup_path).display()
+            );
+            tokio::fs::copy(&path, &backup_path).await?;
+        }
+        last_downloaded_chapter
     } else {
         None
     };
