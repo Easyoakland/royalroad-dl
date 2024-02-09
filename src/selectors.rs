@@ -3,22 +3,22 @@
 use scraper::{selector, Selector};
 use std::sync::OnceLock;
 
-pub fn title_selector() -> &'static Selector {
+pub fn title() -> &'static Selector {
     static CELL: OnceLock<Selector> = OnceLock::new();
     CELL.get_or_init(|| selector::Selector::parse("title").unwrap())
 }
 /// Select chapters from urls table of contents.
-pub fn chapter_link_selector() -> &'static Selector {
+pub fn chapter_links() -> &'static Selector {
     static CELL: OnceLock<Selector> = OnceLock::new();
     CELL.get_or_init(|| {
         selector::Selector::parse(r#"#chapters tr[data-url^="/fiction/"]"#).unwrap()
     })
 }
-pub fn chapter_content_selector() -> &'static Selector {
+pub fn chapter_contents() -> &'static Selector {
     static CELL: OnceLock<Selector> = OnceLock::new();
     CELL.get_or_init(|| selector::Selector::parse("div.chapter-content").unwrap())
 }
-/* pub fn paragraph_selector() -> &'static Selector {
+/* pub fn paragraphs() -> &'static Selector {
     static CELL: OnceLock<Selector> = OnceLock::new();
     CELL.get_or_init(|| selector::Selector::parse("p").unwrap())
 } */
@@ -66,3 +66,7 @@ pub fn is_warning(msg: &str) -> bool {
     }
 }
  */
+pub fn downloaded_chapters() -> &'static Selector {
+    static CELL: OnceLock<Selector> = OnceLock::new();
+    CELL.get_or_init(|| selector::Selector::parse(r#"h1 > a[class="chapter"][href]"#).unwrap())
+}

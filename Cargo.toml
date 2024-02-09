@@ -12,7 +12,6 @@ ego-tree = "0.6.2"
 leaky-bucket = "1.0.1"
 regex = "1.10.3"
 reqwest = "0.11.24"
-rev_buf_reader = "0.3.0"
 scraper = { version = "0.18.1", features = ["deterministic"] }
 tokio = { version = "1.35.1", features = ["full"] }
 url = "2.5.0"

@@ -4,7 +4,6 @@ use royalroad_dl::BufferedIter;
 use scraper::Html;
 use std::{
     borrow::Cow,
-    io::BufRead,
     num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -12,7 +11,7 @@ use std::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 use url::Url;
 
@@ -29,50 +28,28 @@ pub fn sanitize_path(path: &str) -> Cow<'_, str> {
 
 /// - Seek to after the last content previously downloaded in preparation for writing new content.
 /// - Retrieves last known chapter url if found
-/// # Note
-/// Does blocking io
-// TODO: don't do blocking io. Will need to impl AsyncRevBufReader
 async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Option<Url>> {
-    use rev_buf_reader::RevBufReader;
-
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-
-    let mut rev_lines = RevBufReader::new(f.try_clone().await?.into_std().await).lines();
-    // Get the offset end of the previous download for seeking later.
-    let mut reverse_offset = 0;
-    let mut found_end = false;
-    for line in rev_lines.by_ref() {
-        let line = line?;
-        if let Some(idx) = line.rfind("</body>") {
-            reverse_offset += line.len() - idx;
-            found_end = true;
-            break;
-        } else {
-            reverse_offset += line.len();
-        }
-    }
+    let previous_download = {
+        let mut s = String::new();
+        f.read_to_string(&mut s).await?;
+        s
+    };
 
     // Get the most recently downloaded chapter
-    let chapter_url = rev_lines
-        .find_map(|line| {
-            line.map(|line| {
-                REGEX
-                    .get_or_init(|| Regex::new(r#"href="(.*?)""#).unwrap())
-                    .captures(&line)
-                    .and_then(|x| x.get(1).and_then(|x| Url::parse(x.as_str()).ok()))
-            })
-            .transpose()
-        })
-        .transpose()?;
+    let previous_html = Html::parse_document(&previous_download);
+    let last_downloaded_chapter = previous_html
+        .select(selectors::downloaded_chapters())
+        .last()
+        .and_then(|x| x.attr("href"))
+        .and_then(|x| Url::parse(x).ok());
 
-    if found_end {
+    if let Some(offset) = previous_download.rfind("</body>") {
+        offset as usize;
         // Start appending at end of file before last `END_HTML`.
-        f.seek(std::io::SeekFrom::End(
-            -i64::try_from(reverse_offset).unwrap(),
-        ))
-        .await?;
+        f.seek(std::io::SeekFrom::Start((offset).try_into().unwrap()))
+            .await?;
     }
-    Ok(chapter_url)
+    Ok(last_downloaded_chapter)
 }
 
 /// Incremental periodic downloader. Useful on slow connections, going offline, or because online content has a tendency to disappear.
@@ -108,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Extract title.
     let main_title = main_html
-        .select(selectors::title_selector())
+        .select(selectors::title())
         .map(|x| x.inner_html())
         .next()
         .unwrap_or_default();
@@ -175,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let (chapters_len, chapter_responses) = {
         let mut chapters = main_html
-            .select(selectors::chapter_link_selector()) // table of chapters
+            .select(selectors::chapter_links()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
             .map(|x| opt.url.join(x).unwrap()) // absolute url from relative url
             .enumerate()
@@ -217,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Write chapter title.
         let chapter_title = chapter_html
-            .select(selectors::title_selector())
+            .select(selectors::title())
             .map(|x| x.inner_html())
             .next()
             .expect("chapter title"); // TODO: don't panic
@@ -252,7 +229,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Write chapter content and end with `END_HTML` in case of ctrl-c.
         let mut chapter_content = chapter_html
-            .select(selectors::chapter_content_selector())
+            .select(selectors::chapter_contents())
             .map(|x| x.html())
             .next()
             .expect("chapter body"); // TODO don't panic
