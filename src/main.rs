@@ -52,6 +52,57 @@ async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Op
     Ok(last_downloaded_chapter)
 }
 
+/// Get final content for chapter from chapter_response.
+///
+/// May use `chapter_progress_msg` when logging.
+async fn chapter_contents(
+    chapter_progress_msg: &str,
+    chapter_response: reqwest::Response,
+    main_title: &str,
+) -> reqwest::Result<String> {
+    let url = chapter_response.url().to_owned();
+    let mut chapter_html = Html::parse_document(&chapter_response.text().await?);
+
+    let mut out = String::new();
+
+    // Write chapter title.
+    let chapter_title = chapter_html
+        .select(selectors::title())
+        .map(|x| x.inner_html())
+        .next()
+        .expect("chapter title"); // TODO: don't panic
+    let chapter_title = chapter_title
+        .strip_suffix(&main_title)
+        .and_then(|x| x.strip_suffix(" - "))
+        .unwrap_or(&chapter_title);
+    out.push_str(&format!(
+        r#"<h1><a class="chapter" href="{}">{}</a></h1>"#,
+        url, chapter_title
+    ));
+
+    // Remove bad paragraphs.
+    let bad_paragraphs = chapter_html
+        .select(selectors::warning_paragraphs())
+        .map(|x| {
+            println!("Removing {}: {} ", chapter_progress_msg, x.inner_html());
+            x.id()
+        })
+        .collect::<Vec<_>>();
+    for id in bad_paragraphs {
+        chapter_html.tree.get_mut(id).unwrap().detach();
+    }
+
+    let chapter_content = chapter_html
+        .select(selectors::chapter_contents())
+        .map(|x| x.html())
+        .next()
+        .expect("chapter body"); // TODO don't panic
+
+    out.push_str(&chapter_content);
+
+    Ok(out)
+}
+
 /// Incremental periodic downloader. Useful on slow connections, going offline, or because online content has a tendency to disappear.
 #[derive(Debug, Clone, bpaf::Bpaf)]
 #[bpaf(options, version)]
@@ -88,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
         .select(selectors::title())
         .map(|x| x.inner_html())
         .next()
-        .unwrap_or_default();
+        .expect("main title"); // TODO don't panic
 
     // Start output file. Either create new or reuse previous if incremental download.
     let path = opt.path.unwrap_or(PathBuf::from(format!(
@@ -102,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Saving to {}", path.display());
     let incremental = opt.incremental && path.exists();
     if !opt.incremental && path.exists() {
-        anyhow::bail!("File path already exists. Move the item or pass `--incremental` to use it as previous chapter cache.");
+        anyhow::bail!("Path already exists. Move the item at the path or pass `--incremental` to use it as previous chapter cache.");
     }
     let mut f = if incremental {
         File::options().read(true).write(true).open(&path).await?
@@ -180,7 +231,7 @@ async fn main() -> anyhow::Result<()> {
                 tokio::spawn(async move {
                     limiter.acquire_one().await;
                     println!("Downloading {}/{}: {}", i + 1, chapters_len, url);
-                    (i, url.clone(), client.get(url).send().await)
+                    (i, client.get(url).send().await)
                 })
             }),
             opt.connections,
@@ -189,52 +240,17 @@ async fn main() -> anyhow::Result<()> {
     };
     // Save each chapter to file.
     for handle in chapter_responses {
-        let (i, url, chapter_response) = handle.await?;
-        let mut chapter_html = Html::parse_document(&chapter_response?.text().await?);
-
-        // Write chapter title.
-        let chapter_title = chapter_html
-            .select(selectors::title())
-            .map(|x| x.inner_html())
-            .next()
-            .expect("chapter title"); // TODO: don't panic
-        let chapter_title = chapter_title
-            .strip_suffix(&main_title)
-            .and_then(|x| x.strip_suffix(" - "))
-            .unwrap_or(&chapter_title);
-        f.write_all(
-            format!(
-                r#"<h1><a class="chapter" href="{}">{}</a></h1>"#,
-                url, chapter_title
-            )
-            .as_bytes(),
-        )
-        .await?;
-
-        // Remove bad paragraphs.
-        let bad_paragraphs = chapter_html
-            .select(selectors::warning_paragraphs())
-            .map(|x| {
-                println!("Removing {}/{}: {} ", i + 1, chapters_len, x.inner_html());
-                x.id()
-            })
-            .collect::<Vec<_>>();
-        for id in bad_paragraphs {
-            chapter_html
-                .tree
-                .get_mut(id)
-                .expect("id selected from tree")
-                .detach();
-        }
+        let (i, chapter_response) = handle.await?;
 
         // Write chapter content and end with `END_HTML` in case of ctrl-c.
-        let mut chapter_content = chapter_html
-            .select(selectors::chapter_contents())
-            .map(|x| x.html())
-            .next()
-            .expect("chapter body"); // TODO don't panic
-        chapter_content.push_str(END_HTML);
-        f.write_all(chapter_content.as_bytes()).await?;
+        let mut chapter_contents = chapter_contents(
+            &format!("{}/{}", i + 1, chapters_len),
+            chapter_response?,
+            &main_title,
+        )
+        .await?;
+        chapter_contents.push_str(END_HTML);
+        f.write_all(chapter_contents.as_bytes()).await?;
 
         // Seek before `END_HTML` so it is overwritten on next chapter content
         f.seek(std::io::SeekFrom::Current(
