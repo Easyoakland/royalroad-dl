@@ -27,29 +27,27 @@ pub fn sanitize_path(path: &str) -> Cow<'_, str> {
 }
 
 /// - Seek to after the last content previously downloaded in preparation for writing new content.
-/// - Retrieves last known chapter url if found
-async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Option<Url>> {
+/// - Retrieves cached chapters.
+async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Vec<Url>> {
     let previous_download = {
         let mut s = String::new();
         f.read_to_string(&mut s).await?;
         s
     };
 
-    // Get the most recently downloaded chapter
+    // Get cached chapters.
     let previous_html = Html::parse_document(&previous_download);
-    let last_downloaded_chapter = previous_html
+    let cached_chapters = previous_html
         .select(selectors::downloaded_chapters())
-        .last()
-        .and_then(|x| x.attr("href"))
-        .and_then(|x| Url::parse(x).ok());
+        .filter_map(|x| x.attr("href").and_then(|x| Url::parse(x).ok()))
+        .collect::<Vec<_>>();
 
+    // Start appending at end of file before last `END_HTML`.
     if let Some(offset) = previous_download.rfind("</body>") {
-        offset as usize;
-        // Start appending at end of file before last `END_HTML`.
-        f.seek(std::io::SeekFrom::Start((offset).try_into().unwrap()))
+        f.seek(std::io::SeekFrom::Start(offset.try_into().unwrap()))
             .await?;
     }
-    Ok(last_downloaded_chapter)
+    Ok(cached_chapters)
 }
 
 /// Get final content for chapter from chapter_response.
@@ -160,9 +158,9 @@ async fn main() -> anyhow::Result<()> {
     } else {
         File::create(&path).await?
     };
-    let last_downloaded_chapter = if incremental {
-        let last_downloaded_chapter = start_incremental_append(&mut f).await?;
-        if last_downloaded_chapter.is_none() {
+    let cached_chapters = if incremental {
+        let cached_chapters = start_incremental_append(&mut f).await?;
+        if cached_chapters.is_empty() {
             // Will be replacing file so backup first.
             let backup_path = {
                 let mut out = path.clone().into_os_string();
@@ -175,12 +173,12 @@ async fn main() -> anyhow::Result<()> {
             );
             tokio::fs::copy(&path, &backup_path).await?;
         }
-        last_downloaded_chapter
+        cached_chapters
     } else {
-        None
+        Vec::new()
     };
     // If no known chapter to resume from
-    if last_downloaded_chapter.is_none() {
+    if cached_chapters.is_empty() {
         // Start writing file from beginning.
         f.seek(std::io::SeekFrom::Start(0)).await?;
         // Write title and file headers.
@@ -212,15 +210,8 @@ async fn main() -> anyhow::Result<()> {
         let chapters_len = chapters.len();
 
         if incremental {
-            // Skip last downloaded chapter if it exists in the main page.
-            // If it doesn't exist, don't skip anything as that likely indicates previously
-            // downloaded chapters are no longer available and all available chapters were posted
-            // after those already downloaded previously.
-            if let Some(chapter) = last_downloaded_chapter {
-                if let Some(pos) = chapters.iter().position(|(_, x)| *x == chapter) {
-                    chapters.drain(..=pos);
-                };
-            };
+            // Don't download chapters already downloaded.
+            chapters.retain(|(_, x)| !cached_chapters.contains(x));
         }
 
         // GET urls and Buffer tasks for concurrency.
