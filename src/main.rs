@@ -69,10 +69,10 @@ async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Ve
     Ok(cached_chapters)
 }
 
-/// Get final content for chapter from chapter_response.
+/// Get final content for chapter from `chapter_response`.
 ///
 /// May use `chapter_progress_msg` when logging.
-async fn chapter_contents(
+async fn chapter_response_to_content(
     chapter_progress_msg: &str,
     chapter_response: reqwest::Response,
     main_title: &str,
@@ -110,11 +110,10 @@ async fn chapter_contents(
     }
 
     let chapter_content = chapter_html
-        .select(selectors::chapter_contents())
+        .select(selectors::chapter_content())
         .map(|x| x.html())
         .next()
         .ok_or(PageLayoutError::ChapterBody)?;
-
     out.push_str(&chapter_content);
 
     Ok(out)
@@ -253,14 +252,14 @@ async fn main() -> anyhow::Result<()> {
         let (i, chapter_response) = handle.await?;
 
         // Write chapter content and end with `END_HTML` in case of ctrl-c.
-        let mut chapter_contents = chapter_contents(
+        let mut chapter_content = chapter_response_to_content(
             &format!("{}/{}", i + 1, chapters_len),
             chapter_response?,
             &main_title,
         )
         .await?;
-        chapter_contents.push_str(END_HTML);
-        f.write_all(chapter_contents.as_bytes()).await?;
+        chapter_content.push_str(END_HTML);
+        f.write_all(chapter_content.as_bytes()).await?;
 
         // Seek before `END_HTML` so it is overwritten on next chapter content
         f.seek(std::io::SeekFrom::Current(

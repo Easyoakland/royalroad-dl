@@ -14,7 +14,7 @@ pub fn chapter_links() -> &'static Selector {
         selector::Selector::parse(r#"#chapters tr[data-url^="/fiction/"]"#).unwrap()
     })
 }
-pub fn chapter_contents() -> &'static Selector {
+pub fn chapter_content() -> &'static Selector {
     static CELL: OnceLock<Selector> = OnceLock::new();
     CELL.get_or_init(|| selector::Selector::parse("div.chapter-content").unwrap())
 }
