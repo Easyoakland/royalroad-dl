@@ -18,6 +18,25 @@ use url::Url;
 mod selectors;
 const END_HTML: &str = "</body></html>";
 
+/// Layout of page changed.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+enum PageLayoutError {
+    #[error("main page title not found")]
+    MainTitle,
+    #[error("chapter title not found")]
+    ChapterTitle,
+    #[error("chapter body not found")]
+    ChapterBody,
+}
+/// The error type for custom errors with the downloader.
+#[derive(thiserror::Error, Debug)]
+enum Error {
+    #[error("page layout changed: {0}")]
+    Layout(#[from] PageLayoutError),
+    #[error("{0}")]
+    Request(#[from] reqwest::Error),
+}
+
 /// Convert path to something that can be saved to file.
 pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
@@ -57,7 +76,7 @@ async fn chapter_contents(
     chapter_progress_msg: &str,
     chapter_response: reqwest::Response,
     main_title: &str,
-) -> reqwest::Result<String> {
+) -> Result<String, Error> {
     let url = chapter_response.url().to_owned();
     let mut chapter_html = Html::parse_document(&chapter_response.text().await?);
 
@@ -68,7 +87,7 @@ async fn chapter_contents(
         .select(selectors::title())
         .map(|x| x.inner_html())
         .next()
-        .expect("chapter title"); // TODO: don't panic
+        .ok_or(PageLayoutError::ChapterTitle)?;
     let chapter_title = chapter_title
         .strip_suffix(&main_title)
         .and_then(|x| x.strip_suffix(" - "))
@@ -94,7 +113,7 @@ async fn chapter_contents(
         .select(selectors::chapter_contents())
         .map(|x| x.html())
         .next()
-        .expect("chapter body"); // TODO don't panic
+        .ok_or(PageLayoutError::ChapterBody)?;
 
     out.push_str(&chapter_content);
 
@@ -137,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
         .select(selectors::title())
         .map(|x| x.inner_html())
         .next()
-        .expect("main title"); // TODO don't panic
+        .ok_or(PageLayoutError::MainTitle)?;
 
     // Start output file. Either create new or reuse previous if incremental download.
     let path = opt.path.unwrap_or(PathBuf::from(format!(

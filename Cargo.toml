@@ -13,5 +13,6 @@ leaky-bucket = "1.0.1"
 regex = "1.10.3"
 reqwest = "0.11.24"
 scraper = { version = "0.18.1", features = ["deterministic"] }
+thiserror = "1.0.57"
 tokio = { version = "1.35.1", features = ["full"] }
 url = "2.5.0"
