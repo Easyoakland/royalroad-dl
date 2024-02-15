@@ -23,6 +23,8 @@ const END_HTML: &str = "</body></html>";
 enum PageLayoutError {
     #[error("main page title not found")]
     MainTitle,
+    #[error("no chapter links found")]
+    ChapterLinks,
     #[error("chapter title not found")]
     ChapterTitle,
     #[error("chapter body not found")]
@@ -31,7 +33,7 @@ enum PageLayoutError {
 /// The error type for custom errors with the downloader.
 #[derive(thiserror::Error, Debug)]
 enum Error {
-    #[error("page layout changed: {0}")]
+    #[error("Page layout different from expected. Perhaps the website changed?: {0}")]
     Layout(#[from] PageLayoutError),
     #[error("{0}")]
     Request(#[from] reqwest::Error),
@@ -176,6 +178,8 @@ async fn main() -> anyhow::Result<()> {
     } else {
         File::create(&path).await?
     };
+
+    // Get previously downloaded chapters as applicable.
     let cached_chapters = if incremental {
         let cached_chapters = start_incremental_append(&mut f).await?;
         if cached_chapters.is_empty() {
@@ -195,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Vec::new()
     };
+
     // If no known chapter to resume from
     if cached_chapters.is_empty() {
         // Start writing file from beginning.
@@ -224,6 +229,9 @@ async fn main() -> anyhow::Result<()> {
             .map(|x| opt.url.join(x).unwrap()) // absolute url from relative url
             .enumerate()
             .collect::<Vec<_>>();
+        if chapters.is_empty() {
+            return Err(Error::Layout(PageLayoutError::ChapterLinks).into());
+        }
 
         let chapters_len = chapters.len();
 
