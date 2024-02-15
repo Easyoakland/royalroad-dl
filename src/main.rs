@@ -140,7 +140,7 @@ struct Options {
     url: Url,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     // Parse cli options.
     let opt = options().run();
