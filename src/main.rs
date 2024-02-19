@@ -39,6 +39,34 @@ enum Error {
     Request(#[from] reqwest::Error),
 }
 
+/// Wrapper over [`Url`] that compares urls as equal if they represent the same fiction regardless of url content (e.g. with same uuid but different title as same).
+#[derive(Clone, Debug)]
+struct ChapterUrl(pub Url);
+impl PartialEq for ChapterUrl {
+    fn eq(&self, other: &Self) -> bool {
+        let Some(iter) = self
+            .0
+            .path_segments()
+            .zip(other.0.path_segments())
+            .map(|(p1, p2)| core::iter::zip(p1, p2))
+        else {
+            return false;
+        };
+        iter.enumerate().all(|(i, (p1, p2))| i == 2 || p1 == p2)
+    }
+}
+impl Eq for ChapterUrl {}
+impl From<Url> for ChapterUrl {
+    fn from(value: Url) -> Self {
+        Self(value)
+    }
+}
+impl From<ChapterUrl> for Url {
+    fn from(value: ChapterUrl) -> Self {
+        value.0
+    }
+}
+
 /// Convert path to something that can be saved to file.
 pub fn sanitize_path(path: &str) -> Cow<'_, str> {
     static REGEX: OnceLock<Regex> = OnceLock::new();
@@ -49,7 +77,7 @@ pub fn sanitize_path(path: &str) -> Cow<'_, str> {
 
 /// - Seek to after the last content previously downloaded in preparation for writing new content.
 /// - Retrieves cached chapters.
-async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Vec<Url>> {
+async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Vec<ChapterUrl>> {
     let previous_download = {
         let mut s = String::new();
         f.read_to_string(&mut s).await?;
@@ -60,7 +88,11 @@ async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Ve
     let previous_html = Html::parse_document(&previous_download);
     let cached_chapters = previous_html
         .select(selectors::downloaded_chapters())
-        .filter_map(|x| x.attr("href").and_then(|x| Url::parse(x).ok()))
+        .filter_map(|x| {
+            x.attr("href")
+                .and_then(|x| Url::parse(x).ok())
+                .map(Into::into)
+        })
         .collect::<Vec<_>>();
 
     // Start appending at end of file before last `END_HTML`.
@@ -226,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
         let mut chapters = main_html
             .select(selectors::chapter_links()) // table of chapters
             .map(|x| x.attr("data-url").expect("data-url attribute in selector")) // url for table entry
-            .map(|x| opt.url.join(x).unwrap()) // absolute url from relative url
+            .map(|x| opt.url.join(x).unwrap().into()) // absolute url from relative url
             .enumerate()
             .collect::<Vec<_>>();
         if chapters.is_empty() {
@@ -247,8 +279,8 @@ async fn main() -> anyhow::Result<()> {
                 let client = client.clone();
                 tokio::spawn(async move {
                     limiter.acquire_one().await;
-                    println!("Downloading {}/{}: {}", i + 1, chapters_len, url);
-                    (i, client.get(url).send().await)
+                    println!("Downloading {}/{}: {}", i + 1, chapters_len, url.0);
+                    (i, client.get(url.0).send().await)
                 })
             }),
             opt.connections,
@@ -278,4 +310,21 @@ async fn main() -> anyhow::Result<()> {
 
     f.shutdown().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ChapterUrl;
+    use url::Url;
+
+    #[test]
+    fn chapter_url_partial_eq() -> anyhow::Result<()> {
+        let chapter_1 = ChapterUrl(Url::parse(
+            "https://www.royalroad.com/fiction/12345/the-title/chapter/1234567/chapter_title",
+        )?);
+        let chapter_2 = ChapterUrl(Url::parse("https://www.royalroad.com/fiction/12345/the-title-but-different/chapter/1234567/chapter_title")?);
+        assert_eq!(chapter_1, chapter_2);
+        assert_ne!(chapter_1.0, chapter_2.0);
+        Ok(())
+    }
 }
