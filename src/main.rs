@@ -203,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Saving to {}", path.display());
     let incremental = opt.incremental && path.exists();
     if !opt.incremental && path.exists() {
-        anyhow::bail!("Path already exists. Move the item at the path or pass `--incremental` to use it as previous chapter cache.");
+        anyhow::bail!("Path ({}) already exists. Move the item at the path or pass `--incremental` to use it as previous chapter cache.", path.display());
     }
     let mut f = if incremental {
         File::options().read(true).write(true).open(&path).await?
