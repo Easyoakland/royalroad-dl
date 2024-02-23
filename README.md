@@ -1,5 +1,5 @@
 # [Royal Road](https://royalroad.com/) fiction downloader
-CLI tool for downloading fictions from [Royal Road](https://royalroad.com/) incrementally and periodically. Should be able to run the CLI with some arguments in a scheduled job to keep the downloaded copy up-to-date.
+CLI tool for downloading fictions from [Royal Road](https://royalroad.com/) incrementally and periodically. Should be able to run the CLI with `--incremental` in a scheduled job to keep the downloaded copy up-to-date.
 # Goals
 - [x] Incremental downloads work even if fiction changes metadata (fiction title, chapter title, etc.).
 - [x] Download new chapters while preserving old chapters even when old chapters are publicly removed (STUB).
