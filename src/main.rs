@@ -153,18 +153,18 @@ async fn chapter_response_to_content(
     Ok(out)
 }
 
-/// Incremental periodic downloader. Useful on slow connections, going offline, or because online content has a tendency to disappear.
+/// Incremental periodic downloader for RoyalRoad.
 #[derive(Debug, Clone, bpaf::Bpaf)]
 #[bpaf(options, version)]
 struct Options {
     /// Custom output path.
-    #[bpaf(short, long)]
+    #[bpaf(short, long, argument("PATH"))]
     path: Option<PathBuf>,
     /// Minimum ms per request. Can't be zero.
-    #[bpaf(short, long, fallback(NonZeroU64::new(1500).unwrap()), display_fallback)]
+    #[bpaf(short, long, argument("MS"), fallback(NonZeroU64::new(1500).unwrap()), display_fallback)]
     time_limit: NonZeroU64,
     /// Concurrent connections limit. Zero indicates no limit.
-    #[bpaf(short, long, fallback(4), display_fallback)]
+    #[bpaf(short, long, argument("NUM"), fallback(4), display_fallback)]
     connections: usize,
     /// Incremental download. Auto-detect previously downloaded and only download new.
     #[bpaf(short, long)]
