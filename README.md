@@ -21,7 +21,8 @@ Available options:
     -V, --version          Prints version information
 ```
 
-<!-- TODO(automatic CI builds first) # Installing -->
+# Installing
+Download the correct release for your platform from [releases](https://github.com/Easyoakland/royalroad-dl/releases)
 # Building from source
 - Install rust compiler and tool-chain <https://www.rust-lang.org/tools/install>
 - Compile with `cargo build --release` and find the output binary in the `target/release` directory
