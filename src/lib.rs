@@ -1,3 +1,5 @@
+#![doc=include_str!("../README.md")]
+
 use std::{collections::VecDeque, iter::FusedIterator};
 
 /// Buffer up to a set amount of the iterator. Useful for enabling parallelism with an iterator that spawns tasks/threads.
