@@ -11,12 +11,12 @@ license = "MIT"
 [dependencies]
 anyhow = { version = "1.0.79", features = ["backtrace"] }
 bpaf = { version = "0.9.9", features = ["derive"] }
-ego-tree = "0.6.2"
+ego-tree = "0.10.0"
 leaky-bucket = "1.0.1"
 regex = "1.10.3"
-reqwest = { version = "0.11.24", default-features = false, features= ["rustls-tls"]} # use rustls to make cross-compile simple for musl
-scraper = { version = "0.18.1", features = ["deterministic"] }
-thiserror = "1.0.57"
+reqwest = { version = "0.12.12", default-features = false, features= ["http2", "rustls-tls", "charset", "macos-system-configuration"]} # use rustls to make cross-compile simple for musl, but keep other defaults
+scraper = { version = "0.22.0", features = ["deterministic"] }
+thiserror = "2.0.11"
 tokio = { version = "1.35.1", features = ["macros", "fs"] }
 url = "2.5.0"
 
