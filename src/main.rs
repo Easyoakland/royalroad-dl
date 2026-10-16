@@ -36,7 +36,7 @@ enum Error {
     #[error("Page layout different from expected. Perhaps the website changed?: {0}")]
     Layout(#[from] PageLayoutError),
     #[error("{0}")]
-    Request(#[from] reqwest::Error),
+    Request(#[from] wreq::Error),
 }
 
 /// Wrapper over [`Url`] that compares urls as equal if they represent the same fiction regardless of url content (e.g. with same uuid but different title as same).
@@ -108,7 +108,7 @@ async fn start_incremental_append(f: &mut tokio::fs::File) -> std::io::Result<Ve
 /// May use `chapter_progress_msg` when logging.
 async fn chapter_response_to_content(
     chapter_progress_msg: &str,
-    chapter_response: reqwest::Response,
+    chapter_response: wreq::Response,
     main_title: &str,
 ) -> Result<String, Error> {
     let url = chapter_response.url().to_owned();
@@ -179,7 +179,10 @@ async fn main() -> anyhow::Result<()> {
     // Parse cli options.
     let opt = options().run();
 
-    let client = reqwest::Client::builder().build().unwrap();
+    let client = wreq::Client::builder()
+        .emulation(wreq_util::Emulation::Chrome137)
+        .build()
+        .unwrap();
 
     // Get main document.
     let main_html = Html::parse_document(&client.get(opt.url.clone()).send().await?.text().await?);
